@@ -32,6 +32,10 @@ rD693XKIHUCWOjMh1if6omGXKHH40QuME2gNa50+YPn1iYDl88uDbbMCAQI=
 -----END DH PARAMETERS-----
 """
 
+def create_private_key():
+    key = OpenSSL.crypto.PKey()
+    key.generate_key(OpenSSL.crypto.TYPE_RSA, 2048)
+    return key
 
 def create_ca(o, cn, exp):
     key = OpenSSL.crypto.PKey()
@@ -111,6 +115,44 @@ def dummy_cert(privkey, cacert, commonname, sans):
             [OpenSSL.crypto.X509Extension(b"subjectAltName", False, ss)])
     cert.set_pubkey(cacert.get_pubkey())
     cert.sign(privkey, "sha256")
+    return SSLCert(cert)
+
+
+def dummy_cert_custom_pubkey(ca_privkey, ca_cert, cert_pubkey, commonname, sans):
+    """
+        Generates a dummy certificate.
+
+        privkey: CA private key
+        cacert: CA certificate
+        commonname: Common name for the generated certificate.
+        sans: A list of Subject Alternate Names.
+
+        Returns cert if operation succeeded, None if not.
+    """
+    ss = []
+    for i in sans:
+        try:
+            ipaddress.ip_address(i.decode("ascii"))
+        except ValueError:
+            ss.append(b"DNS: %s" % i)
+        else:
+            ss.append(b"IP: %s" % i)
+    ss = b", ".join(ss)
+
+    cert = OpenSSL.crypto.X509()
+    cert.gmtime_adj_notBefore(-3600 * 48)
+    cert.gmtime_adj_notAfter(DEFAULT_EXP)
+    cert.set_issuer(ca_cert.get_subject())
+    if commonname is not None and len(commonname) < 64:
+        cert.get_subject().CN = commonname
+    cert.set_serial_number(int(time.time() * 10000))
+    if ss:
+        cert.set_version(2)
+        cert.add_extensions(
+            [OpenSSL.crypto.X509Extension(b"subjectAltName", False, ss)])
+
+    cert.set_pubkey(cert_pubkey)
+    cert.sign(ca_privkey, "sha256")
     return SSLCert(cert)
 
 
@@ -341,19 +383,19 @@ class CertStore:
         if name:
             entry = self.certs[name]
         else:
+            certkey = create_private_key()
             entry = CertStoreEntry(
-                cert=dummy_cert(
-                    self.default_privatekey,
-                    self.default_ca,
-                    commonname,
-                    sans),
-                privatekey=self.default_privatekey,
-                chain_file=self.default_chain_file)
+                cert=dummy_cert_custom_pubkey(self.default_privatekey,
+                                              self.default_ca,
+                                              certkey,
+                                              commonname,
+                                              sans),
+                privatekey=certkey, chain_file=self.default_chain_file)
+
             self.certs[(commonname, tuple(sans))] = entry
             self.expire(entry)
 
         return entry.cert, entry.privatekey, entry.chain_file
-
 
 class _GeneralName(univ.Choice):
     # We are only interested in dNSNames. We use a default handler to ignore
